@@ -1,10 +1,10 @@
-const fixtures = require('webtorrent-fixtures')
-const fs = require('fs')
-const parseTorrent = require('parse-torrent')
-const path = require('path')
-const sha1 = require('simple-sha1')
-const test = require('tape')
-const createTorrent = require('../')
+import fixtures from 'webtorrent-fixtures'
+import fs from 'fs'
+import parseTorrent from 'parse-torrent'
+import path from 'path'
+import { hash } from 'uint8-util'
+import test from 'tape'
+import createTorrent from '../index.js'
 
 test('create single file torrent from a stream', t => {
   t.plan(11)
@@ -13,10 +13,10 @@ test('create single file torrent from a stream', t => {
   stream.name = 'Leaves of Grass by Walt Whitman.epub'
 
   const startTime = Date.now()
-  createTorrent(stream, { pieceLength: 16384 }, (err, torrent) => {
+  createTorrent(stream, { pieceLength: 16384 }, async (err, torrent) => {
     t.error(err)
 
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equals(parsedTorrent.name, 'Leaves of Grass by Walt Whitman.epub')
 
@@ -57,8 +57,9 @@ test('create single file torrent from a stream', t => {
       '56dcc242d03293e9446cf5e457d8eb3d9588fd90',
       'c698de9b0dad92980906c026d8c1408fa08fe4ec'
     ])
-
-    t.equals(sha1.sync(parsedTorrent.infoBuffer), 'd2474e86c95b19b8bcfdb92bc12c9d44667cfa36')
+    hash(parsedTorrent.infoBuffer, 'hex').then(hash => {
+      t.equals(hash, 'd2474e86c95b19b8bcfdb92bc12c9d44667cfa36')
+    })
   })
 })
 
@@ -82,10 +83,10 @@ test('create multi file torrent with streams', t => {
 
     name: 'numbers'
 
-  }, (err, torrent) => {
+  }, async (err, torrent) => {
     t.error(err)
 
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equals(parsedTorrent.name, 'numbers')
 
@@ -111,7 +112,9 @@ test('create multi file torrent with streams', t => {
     t.deepEquals(parsedTorrent.pieces, [
       '1f74648e50a6a6708ec54ab327a163d5536b7ced'
     ])
-    t.equals(sha1.sync(parsedTorrent.infoBuffer), '80562f38656b385ea78959010e51a2cc9db41ea0')
+    hash(parsedTorrent.infoBuffer, 'hex').then(hash => {
+      t.equals(hash, '80562f38656b385ea78959010e51a2cc9db41ea0')
+    })
   })
 })
 
@@ -120,9 +123,9 @@ test('implicit name and pieceLength for stream', t => {
 
   const stream = fs.createReadStream(fixtures.leaves.contentPath)
 
-  createTorrent(stream, (err, torrent) => {
+  createTorrent(stream, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.ok(parsedTorrent.name.includes('Unnamed Torrent'))
     t.equal(parsedTorrent.pieceLength, 16384)

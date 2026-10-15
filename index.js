@@ -1,19 +1,17 @@
 /*! create-torrent. MIT License. WebTorrent LLC <https://webtorrent.io/opensource> */
-const bencode = require('bencode')
-const BlockStream = require('block-stream2')
-const calcPieceLength = require('piece-length')
-const corePath = require('path')
-const FileReadStream = require('filestream/read')
-const isFile = require('is-file')
-const junk = require('junk')
-const MultiStream = require('multistream')
-const once = require('once')
-const parallel = require('run-parallel')
-const queueMicrotask = require('queue-microtask')
-const sha1 = require('simple-sha1')
-const stream = require('readable-stream')
+import bencode from 'bencode'
+import blockIterator from 'block-iterator'
+import calcPieceLength from 'piece-length'
+import corePath from 'path'
+import isFile from 'is-file'
+import { isJunk } from 'junk'
+import joinIterator from 'join-async-iterator'
+import parallel from 'run-parallel'
+import queueMicrotask from 'queue-microtask'
+import { hash, hex2arr } from 'uint8-util'
+import 'fast-readable-async-iterator'
 
-const getFiles = require('./get-files') // browser exclude
+import getFiles from './get-files.js' // browser exclude
 
 const announceList = [
   ['udp://tracker.leechers-paradise.org:6969'],
@@ -22,7 +20,8 @@ const announceList = [
   ['udp://explodie.org:6969'],
   ['udp://tracker.empire-js.us:1337'],
   ['wss://tracker.btorrent.xyz'],
-  ['wss://tracker.openwebtorrent.com']
+  ['wss://tracker.openwebtorrent.com'],
+  ['wss://tracker.webtorrent.dev']
 ]
 
 /**
@@ -35,6 +34,7 @@ const announceList = [
  * @param  {string=} opts.createdBy
  * @param  {boolean|number=} opts.private
  * @param  {number=} opts.pieceLength
+ * @param  {number=} opts.maxPieceLength
  * @param  {Array.<Array.<string>>=} opts.announceList
  * @param  {Array.<string>=} opts.urlList
  * @param  {Object=} opts.info
@@ -58,6 +58,8 @@ function parseInput (input, opts, cb) {
   opts = opts ? Object.assign({}, opts) : {}
   _parseInput(input, opts, cb)
 }
+
+const pathSymbol = Symbol('itemPath')
 
 /**
  * Parse input file and return file information.
@@ -93,18 +95,18 @@ function _parseInput (input, opts, cb) {
       item.unknownName = true
     }
 
-    item.path = path.split('/')
+    item[pathSymbol] = path.split('/')
 
     // Remove initial slash
-    if (!item.path[0]) {
-      item.path.shift()
+    if (!item[pathSymbol][0]) {
+      item[pathSymbol].shift()
     }
 
-    if (item.path.length < 2) { // No real prefix
+    if (item[pathSymbol].length < 2) { // No real prefix
       commonPrefix = null
     } else if (i === 0 && input.length > 1) { // The first file has a prefix
-      commonPrefix = item.path[0]
-    } else if (item.path[0] !== commonPrefix) { // The prefix doesn't match
+      commonPrefix = item[pathSymbol][0]
+    } else if (item[pathSymbol][0] !== commonPrefix) { // The prefix doesn't match
       commonPrefix = null
     }
   })
@@ -116,15 +118,15 @@ function _parseInput (input, opts, cb) {
       if (typeof item === 'string') {
         return true
       }
-      return !isJunkPath(item.path)
+      return !isJunkPath(item[pathSymbol])
     })
   }
 
   if (commonPrefix) {
     input.forEach(item => {
-      const pathless = (Buffer.isBuffer(item) || isReadable(item)) && !item.path
+      const pathless = (ArrayBuffer.isView(item) || isReadable(item)) && !item[pathSymbol]
       if (typeof item === 'string' || pathless) return
-      item.path.shift()
+      item[pathSymbol].shift()
     })
   }
 
@@ -139,7 +141,7 @@ function _parseInput (input, opts, cb) {
         opts.name = corePath.basename(item)
         return true
       } else if (!item.unknownName) {
-        opts.name = item.path[item.path.length - 1]
+        opts.name = item[pathSymbol][item[pathSymbol].length - 1]
         return true
       }
       return false
@@ -148,6 +150,10 @@ function _parseInput (input, opts, cb) {
 
   if (!opts.name) {
     opts.name = `Unnamed Torrent ${Date.now()}`
+  }
+
+  if (!opts.maxPieceLength) {
+    opts.maxPieceLength = 4 * 1024 * 1024
   }
 
   const numPaths = input.reduce((sum, item) => sum + Number(typeof item === 'string'), 0)
@@ -174,10 +180,10 @@ function _parseInput (input, opts, cb) {
       const file = {}
 
       if (isBlob(item)) {
-        file.getStream = getBlobStream(item)
+        file.getStream = item.stream()
         file.length = item.size
-      } else if (Buffer.isBuffer(item)) {
-        file.getStream = getBufferStream(item)
+      } else if (ArrayBuffer.isView(item)) {
+        file.getStream = [item] // wrap in iterable to write entire buffer at once instead of unwrapping all bytes
         file.length = item.length
       } else if (isReadable(item)) {
         file.getStream = getStreamStream(item, file)
@@ -192,7 +198,7 @@ function _parseInput (input, opts, cb) {
       } else {
         throw new Error('invalid input type')
       }
-      file.path = item.path
+      file.path = item[pathSymbol]
       cb(null, file)
     }), (err, files) => {
       if (err) return cb(err)
@@ -204,98 +210,67 @@ function _parseInput (input, opts, cb) {
 
 const MAX_OUTSTANDING_HASHES = 5
 
-function getPieceList (files, pieceLength, estimatedTorrentLength, opts, cb) {
-  cb = once(cb)
+async function getPieceList (files, pieceLength, estimatedTorrentLength, opts, cb) {
   const pieces = []
   let length = 0
   let hashedLength = 0
 
   const streams = files.map(file => file.getStream)
 
+  const onProgress = opts.onProgress
+
   let remainingHashes = 0
   let pieceNum = 0
   let ended = false
 
-  const multistream = new MultiStream(streams)
-  const blockstream = new BlockStream(pieceLength, { zeroPadding: false })
-
-  multistream.on('error', onError)
-
-  multistream
-    .pipe(blockstream)
-    .on('data', onData)
-    .on('end', onEnd)
-    .on('error', onError)
-
-  function onData (chunk) {
-    length += chunk.length
-
-    const i = pieceNum
-    sha1(chunk, hash => {
-      pieces[i] = hash
-      remainingHashes -= 1
-      if (remainingHashes < MAX_OUTSTANDING_HASHES) {
-        blockstream.resume()
-      }
-      hashedLength += chunk.length
-      if (opts.onProgress) opts.onProgress(hashedLength, estimatedTorrentLength)
-      maybeDone()
-    })
-    remainingHashes += 1
-    if (remainingHashes >= MAX_OUTSTANDING_HASHES) {
-      blockstream.pause()
+  const iterator = blockIterator(joinIterator(streams), pieceLength, { zeroPadding: false })
+  try {
+    for await (const chunk of iterator) {
+      await new Promise(resolve => {
+        length += chunk.length
+        const i = pieceNum
+        ++pieceNum
+        if (++remainingHashes < MAX_OUTSTANDING_HASHES) resolve()
+        hash(chunk, 'hex').then(hash => {
+          pieces[i] = hash
+          --remainingHashes
+          hashedLength += chunk.length
+          if (onProgress) onProgress(hashedLength, estimatedTorrentLength)
+          resolve()
+          if (ended && remainingHashes === 0) cb(null, hex2arr(pieces.join('')), length)
+        })
+      })
     }
-    pieceNum += 1
-  }
-
-  function onEnd () {
+    if (remainingHashes === 0) return cb(null, hex2arr(pieces.join('')), length)
     ended = true
-    maybeDone()
-  }
-
-  function onError (err) {
-    cleanup()
+  } catch (err) {
     cb(err)
-  }
-
-  function cleanup () {
-    multistream.removeListener('error', onError)
-    blockstream.removeListener('data', onData)
-    blockstream.removeListener('end', onEnd)
-    blockstream.removeListener('error', onError)
-  }
-
-  function maybeDone () {
-    if (ended && remainingHashes === 0) {
-      cleanup()
-      cb(null, Buffer.from(pieces.join(''), 'hex'), length)
-    }
   }
 }
 
 function onFiles (files, opts, cb) {
-  let announceList = opts.announceList
+  let _announceList = opts.announceList
 
-  if (!announceList) {
-    if (typeof opts.announce === 'string') announceList = [[opts.announce]]
+  if (!_announceList) {
+    if (typeof opts.announce === 'string') _announceList = [[opts.announce]]
     else if (Array.isArray(opts.announce)) {
-      announceList = opts.announce.map(u => [u])
+      _announceList = opts.announce.map(u => [u])
     }
   }
 
-  if (!announceList) announceList = []
+  if (!_announceList) _announceList = []
 
   if (globalThis.WEBTORRENT_ANNOUNCE) {
     if (typeof globalThis.WEBTORRENT_ANNOUNCE === 'string') {
-      announceList.push([[globalThis.WEBTORRENT_ANNOUNCE]])
+      _announceList.push([[globalThis.WEBTORRENT_ANNOUNCE]])
     } else if (Array.isArray(globalThis.WEBTORRENT_ANNOUNCE)) {
-      announceList = announceList.concat(globalThis.WEBTORRENT_ANNOUNCE.map(u => [u]))
+      _announceList = _announceList.concat(globalThis.WEBTORRENT_ANNOUNCE.map(u => [u]))
     }
   }
 
   // When no trackers specified, use some reasonable defaults
   if (opts.announce === undefined && opts.announceList === undefined) {
-    announceList = announceList.concat(module.exports.announceList)
+    _announceList = _announceList.concat(announceList)
   }
 
   if (typeof opts.urlList === 'string') opts.urlList = [opts.urlList]
@@ -308,9 +283,9 @@ function onFiles (files, opts, cb) {
     encoding: 'UTF-8'
   }
 
-  if (announceList.length !== 0) {
-    torrent.announce = announceList[0][0]
-    torrent['announce-list'] = announceList
+  if (_announceList.length !== 0) {
+    torrent.announce = _announceList[0][0]
+    torrent['announce-list'] = _announceList
   }
 
   if (opts.comment !== undefined) torrent.comment = opts.comment
@@ -330,7 +305,7 @@ function onFiles (files, opts, cb) {
   if (opts.urlList !== undefined) torrent['url-list'] = opts.urlList
 
   const estimatedTorrentLength = files.reduce(sumLength, 0)
-  const pieceLength = opts.pieceLength || calcPieceLength(estimatedTorrentLength)
+  const pieceLength = opts.pieceLength || Math.min(calcPieceLength(estimatedTorrentLength), opts.maxPieceLength)
   torrent.info['piece length'] = pieceLength
 
   getPieceList(
@@ -366,7 +341,7 @@ function onFiles (files, opts, cb) {
  */
 function isJunkPath (path) {
   const filename = path[path.length - 1]
-  return filename[0] === '.' && junk.is(filename)
+  return filename[0] === '.' && isJunk(filename)
 }
 
 /**
@@ -407,49 +382,20 @@ function isReadable (obj) {
 }
 
 /**
- * Convert a `File` to a lazy readable stream.
- * @param  {File|Blob} file
- * @return {function}
- */
-function getBlobStream (file) {
-  return () => new FileReadStream(file)
-}
-
-/**
- * Convert a `Buffer` to a lazy readable stream.
- * @param  {Buffer} buffer
- * @return {function}
- */
-function getBufferStream (buffer) {
-  return () => {
-    const s = new stream.PassThrough()
-    s.end(buffer)
-    return s
-  }
-}
-
-/**
- * Convert a readable stream to a lazy readable stream. Adds instrumentation to track
+ * Convert a readable stream to a lazy async iterator. Adds instrumentation to track
  * the number of bytes in the stream and set `file.length`.
  *
+ * @generator
  * @param  {Stream} readable
  * @param  {Object} file
- * @return {function}
+ * @return {Uint8Array} stream data/chunk
  */
-function getStreamStream (readable, file) {
-  return () => {
-    const counter = new stream.Transform()
-    counter._transform = function (buf, enc, done) {
-      file.length += buf.length
-      this.push(buf)
-      done()
-    }
-    readable.pipe(counter)
-    return counter
+async function * getStreamStream (readable, file) {
+  for await (const chunk of readable) {
+    file.length += chunk.length
+    yield chunk
   }
 }
 
-module.exports = createTorrent
-module.exports.parseInput = parseInput
-module.exports.announceList = announceList
-module.exports.isJunkPath = isJunkPath
+export default createTorrent
+export { parseInput, announceList, isJunkPath }

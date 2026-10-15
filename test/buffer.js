@@ -1,8 +1,8 @@
-const createTorrent = require('../')
-const parseTorrent = require('parse-torrent')
-const path = require('path')
-const sha1 = require('simple-sha1')
-const test = require('tape')
+import createTorrent from '../index.js'
+import parseTorrent from 'parse-torrent'
+import path from 'path'
+import { hash } from 'uint8-util'
+import test from 'tape'
 
 test('create nested torrent with array of buffers', t => {
   t.plan(14)
@@ -16,10 +16,10 @@ test('create nested torrent with array of buffers', t => {
   const startTime = Date.now()
   createTorrent([buf1, buf2], {
     name: 'multi'
-  }, (err, torrent) => {
+  }, async (err, torrent) => {
     t.error(err)
 
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equals(parsedTorrent.name, 'multi')
 
@@ -42,6 +42,8 @@ test('create nested torrent with array of buffers', t => {
     t.deepEquals(parsedTorrent.pieces, [
       '5bf1fd927dfb8679496a2e6cf00cbe50c1c87145'
     ])
-    t.equals(sha1.sync(parsedTorrent.infoBuffer), '8fa3c08e640db9576156b21f31353402456a0208')
+    hash(parsedTorrent.infoBuffer, 'hex').then(hash => {
+      t.equals(hash, '8fa3c08e640db9576156b21f31353402456a0208')
+    })
   })
 })

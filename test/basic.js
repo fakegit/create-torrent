@@ -1,16 +1,16 @@
-const parseTorrent = require('parse-torrent')
-const path = require('path')
-const test = require('tape')
-const createTorrent = require('../')
+import parseTorrent from 'parse-torrent'
+import path from 'path'
+import test from 'tape'
+import createTorrent from '../index.js'
 
 test('implicit torrent name and file name', t => {
   t.plan(5)
 
   const buf1 = Buffer.from('buf1')
 
-  createTorrent(buf1, (err, torrent) => {
+  createTorrent(buf1, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.ok(parsedTorrent.name.includes('Unnamed Torrent'))
 
@@ -25,9 +25,9 @@ test('implicit file name from torrent name', t => {
 
   const buf1 = Buffer.from('buf1')
 
-  createTorrent(buf1, { name: 'My Cool File' }, (err, torrent) => {
+  createTorrent(buf1, { name: 'My Cool File' }, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -43,9 +43,9 @@ test('implicit torrent name from file name', t => {
   const buf1 = Buffer.from('buf1')
   buf1.name = 'My Cool File'
 
-  createTorrent(buf1, (err, torrent) => {
+  createTorrent(buf1, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -61,9 +61,9 @@ test('implicit file names from torrent name', t => {
   const buf1 = Buffer.from('buf1')
   const buf2 = Buffer.from('buf2')
 
-  createTorrent([buf1, buf2], { name: 'My Cool File' }, (err, torrent) => {
+  createTorrent([buf1, buf2], { name: 'My Cool File' }, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -83,9 +83,9 @@ test('set file name with `name` property', t => {
   const buf1 = Buffer.from('buf1')
   buf1.name = 'My Cool File'
 
-  createTorrent(buf1, (err, torrent) => {
+  createTorrent(buf1, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -104,9 +104,9 @@ test('set file names with `name` property', t => {
   const buf2 = Buffer.from('buf2')
   buf2.name = 'My Cool File 2'
 
-  createTorrent([buf1, buf2], { name: 'My Cool Torrent' }, (err, torrent) => {
+  createTorrent([buf1, buf2], { name: 'My Cool Torrent' }, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool Torrent')
 
@@ -126,9 +126,9 @@ test('set file name with `fullPath` property', t => {
   const buf1 = Buffer.from('buf1')
   buf1.fullPath = 'My Cool File'
 
-  createTorrent(buf1, (err, torrent) => {
+  createTorrent(buf1, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -147,9 +147,9 @@ test('set file names with `fullPath` property', t => {
   const buf2 = Buffer.from('buf2')
   buf2.fullPath = 'My Cool File 2'
 
-  createTorrent([buf1, buf2], { name: 'My Cool Torrent' }, (err, torrent) => {
+  createTorrent([buf1, buf2], { name: 'My Cool Torrent' }, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool Torrent')
 
@@ -169,9 +169,9 @@ test('implicit torrent name from file name with slashes in it', t => {
   const buf1 = Buffer.from('buf1')
   buf1.name = 'My Cool Folder/My Cool File'
 
-  createTorrent(buf1, (err, torrent) => {
+  createTorrent(buf1, async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool File')
 
@@ -190,9 +190,9 @@ test('implicit torrent name from file names with slashes in them', t => {
   const buf2 = Buffer.from('buf2')
   buf2.name = 'My Cool Folder/My Cool File 2'
 
-  createTorrent([buf1, buf2], (err, torrent) => {
+  createTorrent([buf1, buf2], async (err, torrent) => {
     t.error(err)
-    const parsedTorrent = parseTorrent(torrent)
+    const parsedTorrent = await parseTorrent(torrent)
 
     t.equal(parsedTorrent.name, 'My Cool Folder')
 
@@ -203,5 +203,59 @@ test('implicit torrent name from file names with slashes in them', t => {
 
     t.equal(parsedTorrent.files[1].name, 'My Cool File 2')
     t.equal(parsedTorrent.files[1].path, path.join('My Cool Folder', 'My Cool File 2'))
+  })
+})
+
+test('verify torrent length with maxPieceLength set', t => {
+  t.plan(8)
+
+  const buf1 = Buffer.from('buf1')
+  buf1.name = 'My Cool Folder/My Cool File 1'
+
+  const buf2 = Buffer.from('buf2')
+  buf2.name = 'My Cool Folder/My Cool File 2'
+
+  createTorrent([buf1, buf2], { maxPieceLength: 10 }, async (err, torrent) => {
+    t.error(err)
+    const parsedTorrent = await parseTorrent(torrent)
+
+    t.equal(parsedTorrent.name, 'My Cool Folder')
+
+    t.equal(parsedTorrent.files.length, 2)
+
+    t.equal(parsedTorrent.files[0].name, 'My Cool File 1')
+    t.equal(parsedTorrent.files[0].path, path.join('My Cool Folder', 'My Cool File 1'))
+
+    t.equal(parsedTorrent.files[1].name, 'My Cool File 2')
+    t.equal(parsedTorrent.files[1].path, path.join('My Cool Folder', 'My Cool File 2'))
+
+    t.equal(parsedTorrent.pieceLength, 10)
+  })
+})
+
+test('verify maxPieceLength is ignored when pieceLength is manually set', t => {
+  t.plan(8)
+
+  const buf1 = Buffer.from('buf1')
+  buf1.name = 'My Cool Folder/My Cool File 1'
+
+  const buf2 = Buffer.from('buf2')
+  buf2.name = 'My Cool Folder/My Cool File 2'
+
+  createTorrent([buf1, buf2], { pieceLength: 1024, maxPieceLength: 10 }, async (err, torrent) => {
+    t.error(err)
+    const parsedTorrent = await parseTorrent(torrent)
+
+    t.equal(parsedTorrent.name, 'My Cool Folder')
+
+    t.equal(parsedTorrent.files.length, 2)
+
+    t.equal(parsedTorrent.files[0].name, 'My Cool File 1')
+    t.equal(parsedTorrent.files[0].path, path.join('My Cool Folder', 'My Cool File 1'))
+
+    t.equal(parsedTorrent.files[1].name, 'My Cool File 2')
+    t.equal(parsedTorrent.files[1].path, path.join('My Cool Folder', 'My Cool File 2'))
+
+    t.equal(parsedTorrent.pieceLength, 1024)
   })
 })
